@@ -33,61 +33,75 @@ const ChatContainer = ({ selectedUser }) => {
   }, [socket, user?._id]);
 
   // Handle incoming messages
-  useEffect(() => {
-    if (!socket) return;
+  // Handle incoming messages
+useEffect(() => {
+  if (!socket) return;
 
-    const handleReceiveMessage = (message) => {
-      // Check if message is relevant to current chat
-      if (
-        (message.sender._id === selectedUser?._id && message.receiver._id === user._id) ||
-        (message.receiver._id === selectedUser?._id && message.sender._id === user._id)
-      ) {
-        setMessages((prev) => [...prev, message]);
+  const handleReceiveMessage = (message) => {
+    setMessages((prev) => {
+      // Check if message already exists (prevent duplicates)
+      const exists = prev.some(m => m._id === message._id);
+      if (!exists) {
+        return [...prev, message];
       }
-    };
-
-    socket.on('receiveMessage', handleReceiveMessage);
-
-    return () => {
-      socket.off('receiveMessage', handleReceiveMessage);
-    };
-  }, [socket, selectedUser, user?._id]);
-
-  // Auto-scroll to bottom when messages change
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
-  const handleSendMessage = async (e) => {
-    e.preventDefault();
-    if (!newMessage.trim() || !selectedUser) return;
-
-    try {
-      const messageData = {
-        receiver: selectedUser._id,
-        message: newMessage,
-      };
-
-      // Send message to server
-      const sentMessage = await chatService.sendMessage(messageData, user.token);
-      
-      // Format the message with proper sender/receiver info
-      const formattedMessage = {
-        ...sentMessage,
-        sender: { _id: user._id, name: user.name },
-        receiver: { _id: selectedUser._id, name: selectedUser.name }
-      };
-
-      // Update local state immediately
-      setMessages((prev) => [...prev, formattedMessage]);
-      setNewMessage('');
-
-      // Emit the message via socket
-      socket.emit('sendMessage', formattedMessage);
-    } catch (error) {
-      console.error('Error sending message:', error);
-    }
+      return prev;
+    });
   };
+
+  socket.on('receiveMessage', handleReceiveMessage);
+
+  return () => {
+    socket.off('receiveMessage', handleReceiveMessage);
+  };
+}, [socket]);
+
+// Modified send message handler
+const handleSendMessage = async (e) => {
+  e.preventDefault();
+  if (!newMessage.trim() || !selectedUser) return;
+
+  try {
+    const messageData = {
+      receiver: selectedUser._id,
+      message: newMessage,
+    };
+
+    // Optimistically update UI
+    const tempId = Date.now(); // Temporary ID for optimistic update
+    const optimisticMessage = {
+      _id: tempId,
+      sender: { _id: user._id, name: user.name },
+      receiver: { _id: selectedUser._id, name: selectedUser.name },
+      message: newMessage,
+      createdAt: new Date(),
+      isRead: false,
+      __v: 0
+    };
+
+    setMessages(prev => [...prev, optimisticMessage]);
+    setNewMessage('');
+
+    // Send to server
+    const sentMessage = await chatService.sendMessage(messageData, user.token);
+    
+    // Replace optimistic message with real one
+    setMessages(prev => prev.map(m => 
+      m._id === tempId ? sentMessage : m
+    ));
+
+    // Emit via socket
+    socket.emit('sendMessage', {
+      ...sentMessage,
+      sender: { _id: user._id, name: user.name },
+      receiver: { _id: selectedUser._id, name: selectedUser.name }
+    });
+
+  } catch (error) {
+    console.error('Error sending message:', error);
+    // Remove optimistic message on error
+    setMessages(prev => prev.filter(m => m._id !== tempId));
+  }
+};
 
   if (!selectedUser) {
     return (
